@@ -6,6 +6,7 @@ DEFAULT_REGISTRY="sealos.hub:5000/kube4"
 DEFAULT_NAMESPACE="casdoor"
 DEFAULT_WAIT_TIMEOUT="300s"
 DEFAULT_SERVICE_TYPE="ClusterIP"
+DEFAULT_HTTP_ADDR="0.0.0.0"
 
 ACTION="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
@@ -24,6 +25,7 @@ CREATE_DATABASE="true"
 DB_DRIVER="mysql"
 DATA_SOURCE_NAME=""
 DB_NAME="casdoor"
+HTTP_ADDR="${DEFAULT_HTTP_ADDR}"
 ORIGIN=""
 ORIGIN_FRONTEND=""
 STATIC_BASE_URL=""
@@ -56,6 +58,7 @@ Options:
   --db-driver <mysql|postgres>       Casdoor database driver. Default: mysql
   --data-source-name <dsn>           Casdoor dataSourceName, without dbName for MySQL-style config.
   --db-name <name>                   Casdoor dbName. Default: casdoor
+  --http-addr <addr>                 Casdoor listen address in container. Default: ${DEFAULT_HTTP_ADDR}
   --create-database <true|false>     Run server with --createDatabase flag. Default: true
   --origin <url>                     Casdoor backend public origin, for example https://casdoor.example.com
   --origin-frontend <url>            Optional frontend origin.
@@ -78,6 +81,7 @@ Example MySQL:
     --db-driver mysql \
     --data-source-name 'root:password@tcp(mysql.default.svc.cluster.local:3306)/' \
     --db-name casdoor \
+    --http-addr 0.0.0.0 \
     --origin 'https://casdoor.example.com' \
     -y
 
@@ -88,6 +92,7 @@ Example PostgreSQL:
     --db-driver postgres \
     --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable' \
     --db-name casdoor \
+    --http-addr 0.0.0.0 \
     --origin 'https://casdoor.example.com' \
     -y
 USAGE
@@ -107,6 +112,7 @@ while [[ $# -gt 0 ]]; do
     --db-driver) DB_DRIVER="${2:-}"; shift 2 ;;
     --data-source-name) DATA_SOURCE_NAME="${2:-}"; shift 2 ;;
     --db-name) DB_NAME="${2:-}"; shift 2 ;;
+    --http-addr) HTTP_ADDR="${2:-}"; shift 2 ;;
     --create-database) CREATE_DATABASE="${2:-}"; shift 2 ;;
     --origin) ORIGIN="${2:-}"; shift 2 ;;
     --origin-frontend) ORIGIN_FRONTEND="${2:-}"; shift 2 ;;
@@ -129,6 +135,7 @@ if [[ "${ACTION}" == "help" ]]; then usage; exit 0; fi
 [[ -n "${REGISTRY}" ]] || die "--registry cannot be empty"
 [[ -n "${NAMESPACE}" ]] || die "--namespace cannot be empty"
 [[ -n "${DB_NAME}" ]] || die "--db-name cannot be empty"
+[[ -n "${HTTP_ADDR}" ]] || die "--http-addr cannot be empty"
 case "${DB_DRIVER}" in mysql|postgres|sqlite3|mssql|oracle) ;; *) die "unsupported --db-driver: ${DB_DRIVER}" ;; esac
 case "${SERVICE_TYPE}" in ClusterIP|NodePort|LoadBalancer) ;; *) die "--service-type must be ClusterIP, NodePort, or LoadBalancer" ;; esac
 case "${CREATE_DATABASE}" in true|false) ;; *) die "--create-database must be true or false" ;; esac
@@ -167,7 +174,7 @@ confirm() {
   [[ "${YES}" == "1" ]] && return 0
   echo "About to ${ACTION} Casdoor in namespace '${NAMESPACE}'."
   if [[ "${ACTION}" == "install" ]]; then
-    echo "db-driver=${DB_DRIVER}, db-name=${DB_NAME}, create-database=${CREATE_DATABASE}, service-type=${SERVICE_TYPE}"
+    echo "db-driver=${DB_DRIVER}, db-name=${DB_NAME}, http-addr=${HTTP_ADDR}, create-database=${CREATE_DATABASE}, service-type=${SERVICE_TYPE}"
   fi
   read -r -p "Continue? [y/N] " answer
   [[ "${answer}" == "y" || "${answer}" == "Y" ]] || die "aborted"
@@ -235,6 +242,7 @@ render_app_conf_b64() {
   fi
   cat <<CONF | base64 | tr -d '\n'
 appname = casdoor
+httpaddr = ${HTTP_ADDR}
 httpport = 8000
 runmode = ${RUNMODE}
 copyrequestbody = true
