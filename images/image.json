@@ -1,0 +1,18 @@
+[
+  {
+    "name": "casdoor",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "dockerfile": "docker/casdoor/Dockerfile",
+    "tag": "sealos.hub:5000/kube4/casdoor/casdoor:2026.07.01",
+    "tar": "casdoor-amd64.tar"
+  },
+  {
+    "name": "casdoor",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "dockerfile": "docker/casdoor/Dockerfile",
+    "tag": "sealos.hub:5000/kube4/casdoor/casdoor:2026.07.01",
+    "tar": "casdoor-arm64.tar"
+  }
+]
