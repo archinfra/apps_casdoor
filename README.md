@@ -10,6 +10,7 @@ This package builds a Casdoor image from upstream `casdoor/casdoor`, packages th
 - default upstream ref: `master`
 - default namespace: `casdoor`
 - default service type: `ClusterIP`
+- default listen address: `0.0.0.0:8000`
 - default image: `sealos.hub:5000/kube4/casdoor/casdoor:2026.07.01`
 
 The package self-builds Casdoor instead of simply pulling `casbin/casdoor:latest`.
@@ -30,6 +31,8 @@ HTTP: 8000
 ## Upstream references
 
 The upstream default `conf/app.conf` uses `httpport = 8000`, `driverName`, `dataSourceName`, and `dbName` for database configuration. The official docker-compose example starts Casdoor with `./server --createDatabase=true`, sets `RUNNING_IN_DOCKER=true`, and mounts `/conf`. This package follows that model, but renders `app.conf` from installer arguments and stores it in a Kubernetes Secret.
+
+This package additionally renders `httpaddr = 0.0.0.0` by default so the Casdoor process listens on all interfaces inside the Pod. Without this, the process can appear healthy locally but fail through Service/NodePort/Ingress depending on how the runtime binds the listener.
 
 ## Build locally
 
@@ -119,6 +122,7 @@ chmod +x casdoor-2026.07.01-amd64.run
   --db-driver mysql \
   --data-source-name 'root:password@tcp(mysql.default.svc.cluster.local:3306)/' \
   --db-name casdoor \
+  --http-addr 0.0.0.0 \
   --origin 'https://casdoor.example.com' \
   -y
 ```
@@ -134,6 +138,7 @@ chmod +x casdoor-2026.07.01-amd64.run
   --db-driver postgres \
   --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable' \
   --db-name casdoor \
+  --http-addr 0.0.0.0 \
   --origin 'https://casdoor.example.com' \
   -y
 ```
@@ -148,11 +153,20 @@ If the target registry already contains the Casdoor image:
   --db-driver postgres \
   --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable' \
   --db-name casdoor \
+  --http-addr 0.0.0.0 \
   --origin 'https://casdoor.example.com' \
   -y
 ```
 
-## NodePort
+## External access
+
+`httpaddr = 0.0.0.0` only controls the listener inside the container. To access Casdoor from outside the cluster, you still need one of these exposure methods:
+
+- `--service-type NodePort --nodeport-http <port>`
+- `--service-type LoadBalancer`
+- Ingress / Gateway API / reverse proxy pointing to `casdoor.casdoor.svc.cluster.local:8000`
+
+The `--origin` value must match the real browser URL. For example, when using NodePort:
 
 ```bash
 ./casdoor-2026.07.01-amd64.run install \
@@ -163,6 +177,7 @@ If the target registry already contains the Casdoor image:
   --db-driver mysql \
   --data-source-name 'root:password@tcp(mysql.default.svc.cluster.local:3306)/' \
   --db-name casdoor \
+  --http-addr 0.0.0.0 \
   --origin 'http://NODE_IP:32080' \
   -y
 ```
@@ -173,6 +188,20 @@ If the target registry already contains the Casdoor image:
 ./casdoor-2026.07.01-amd64.run status -n casdoor
 kubectl get pods,svc,deploy,secret -n casdoor -l app.kubernetes.io/name=casdoor
 kubectl logs -n casdoor deploy/casdoor
+```
+
+Check the rendered `app.conf`:
+
+```bash
+kubectl get secret -n casdoor casdoor-config -o jsonpath='{.data.app\.conf}' | base64 -d | grep -E '^(httpaddr|httpport|origin)'
+```
+
+Expected:
+
+```text
+httpaddr = 0.0.0.0
+httpport = 8000
+origin = http://NODE_IP:32080
 ```
 
 ## Uninstall
@@ -192,6 +221,7 @@ The installer does not delete your external database or Casdoor tables.
 ## Important notes
 
 - Use `--origin` that matches the real browser access URL, otherwise OAuth redirect URLs and frontend behavior may be wrong.
+- `--http-addr 0.0.0.0` is the default and is required for normal Service/NodePort/Ingress access.
 - `--create-database true` is the default and matches the upstream docker-compose example.
 - For production, use an external MySQL or PostgreSQL service with backup enabled.
 - This package renders `app.conf` into a Kubernetes Secret. Treat it as sensitive because it contains the database DSN.
