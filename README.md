@@ -17,7 +17,7 @@ The package self-builds Casdoor instead of simply pulling `casbin/casdoor:latest
 
 ## What this package creates
 
-- Namespace
+- Namespace: created only when the target namespace does not already exist
 - Secret: `casdoor-config`, containing `/conf/app.conf`
 - Service: `casdoor`
 - Deployment: `casdoor`
@@ -27,6 +27,25 @@ Service port:
 ```text
 HTTP: 8000
 ```
+
+## Namespace safety
+
+The installer must be safe to use in a shared namespace such as `aisphere`.
+
+- Install creates the namespace only if it does not already exist.
+- Install does not overwrite ownership labels on an existing namespace.
+- Uninstall deletes only Casdoor's namespaced resources by default: `deployment/casdoor`, `service/casdoor`, and `secret/casdoor-config`.
+- `--delete-namespace` is gated and only deletes a namespace that was created by this installer and labeled `archinfra.io/created-by=apps-casdoor`.
+
+Older packages rendered a `Namespace` object into the same manifest as Casdoor resources. Running `kubectl delete -f` on that manifest could delete the entire namespace. Rebuild the `.run` package from this version before using `uninstall` in a shared namespace.
+
+## Config rollout behavior
+
+`app.conf` is stored in the `casdoor-config` Secret and mounted into the container as `/conf/app.conf`.
+
+The Deployment template includes a `checksum/app-conf` annotation generated from the rendered `app.conf`. When database settings, `origin`, or other config fields change, the Deployment template changes and Kubernetes rolls out a new Pod automatically.
+
+This matters because Secret mounts through `subPath` do not update inside an already-running container.
 
 ## Upstream references
 
@@ -79,10 +98,10 @@ dist/casdoor-2026.07.01-arm64.run.sha256
 Target host requirements:
 
 - `bash`
-- common Linux base tools: `awk`, `head`, `wc`, `dd`, `od`, `tail`, `tar`, `sed`, `base64`
+- common Linux base tools: `awk`, `head`, `wc`, `dd`, `od`, `tail`, `tar`, `sed`, `base64`, `sha256sum`
 - `docker`, unless `--skip-image-prepare` is used
 - `kubectl`
-- optional `sha256sum`, only for checking the `.sha256` file before running the installer
+- optional `.sha256` file checking before running the installer
 
 The target host does **not** need `jq` or Python.
 
@@ -105,8 +124,10 @@ root:password@tcp(mysql.default.svc.cluster.local:3306)/
 Example installer DSN:
 
 ```text
-user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable
+user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable dbname=casdoor
 ```
+
+For PostgreSQL, explicitly include `dbname=casdoor` in `--data-source-name` and also set `--db-name casdoor` so both Casdoor and the database driver receive the intended database name.
 
 ## Install with MySQL
 
@@ -136,7 +157,7 @@ chmod +x casdoor-2026.07.01-amd64.run
   --registry-pass 'passw0rd' \
   -n casdoor \
   --db-driver postgres \
-  --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable' \
+  --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable dbname=casdoor' \
   --db-name casdoor \
   --http-addr 0.0.0.0 \
   --origin 'https://casdoor.example.com' \
@@ -151,7 +172,7 @@ If the target registry already contains the Casdoor image:
   --skip-image-prepare \
   -n casdoor \
   --db-driver postgres \
-  --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable' \
+  --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable dbname=casdoor' \
   --db-name casdoor \
   --http-addr 0.0.0.0 \
   --origin 'https://casdoor.example.com' \
@@ -193,7 +214,7 @@ kubectl logs -n casdoor deploy/casdoor
 Check the rendered `app.conf`:
 
 ```bash
-kubectl get secret -n casdoor casdoor-config -o jsonpath='{.data.app\.conf}' | base64 -d | grep -E '^(httpaddr|httpport|origin)'
+kubectl get secret -n casdoor casdoor-config -o jsonpath='{.data.app\.conf}' | base64 -d | grep -E '^(httpaddr|httpport|origin|driverName|dataSourceName|dbName)'
 ```
 
 Expected:
@@ -201,20 +222,27 @@ Expected:
 ```text
 httpaddr = 0.0.0.0
 httpport = 8000
+driverName = postgres
+dataSourceName = user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable dbname=casdoor
+dbName = casdoor
 origin = http://NODE_IP:32080
 ```
 
 ## Uninstall
 
+Default uninstall deletes only Casdoor resources and keeps the namespace:
+
 ```bash
 ./casdoor-2026.07.01-amd64.run uninstall -n casdoor -y
 ```
 
-Delete namespace too:
+Delete namespace too only when it was created by this installer:
 
 ```bash
 ./casdoor-2026.07.01-amd64.run uninstall -n casdoor --delete-namespace -y
 ```
+
+The installer refuses to delete a shared or pre-existing namespace even when `--delete-namespace` is provided.
 
 The installer does not delete your external database or Casdoor tables.
 
@@ -223,6 +251,7 @@ The installer does not delete your external database or Casdoor tables.
 - Use `--origin` that matches the real browser access URL, otherwise OAuth redirect URLs and frontend behavior may be wrong.
 - `--http-addr 0.0.0.0` is the default and is required for normal Service/NodePort/Ingress access.
 - `--create-database true` is the default and matches the upstream docker-compose example.
+- For PostgreSQL, include `dbname=casdoor` in `--data-source-name` and also pass `--db-name casdoor`.
 - For production, use an external MySQL or PostgreSQL service with backup enabled.
 - This package renders `app.conf` into a Kubernetes Secret. Treat it as sensitive because it contains the database DSN.
 - Casdoor is usually a single Deployment replica unless your DB/session/cache design is ready for multi-replica behavior.
