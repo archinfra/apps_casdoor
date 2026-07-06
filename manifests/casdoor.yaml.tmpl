@@ -1,12 +1,4 @@
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: __NAMESPACE__
-  labels:
-    app.kubernetes.io/name: casdoor
-    app.kubernetes.io/instance: casdoor
----
-apiVersion: v1
 kind: Secret
 metadata:
   name: casdoor-config
@@ -54,6 +46,8 @@ spec:
       app.kubernetes.io/instance: casdoor
   template:
     metadata:
+      annotations:
+        checksum/app-conf: "__APP_CONF_SHA256__"
       labels:
         app.kubernetes.io/name: casdoor
         app.kubernetes.io/instance: casdoor
