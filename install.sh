@@ -7,6 +7,7 @@ DEFAULT_NAMESPACE="casdoor"
 DEFAULT_WAIT_TIMEOUT="300s"
 DEFAULT_SERVICE_TYPE="ClusterIP"
 DEFAULT_HTTP_ADDR="0.0.0.0"
+NAMESPACE_CREATED_LABEL="archinfra.io/created-by=apps-casdoor"
 
 ACTION="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
@@ -46,7 +47,7 @@ Usage:
 Actions:
   install      Extract payload, load/tag/push image, render app.conf and Kubernetes manifests, and install Casdoor.
   status       Show Casdoor resources.
-  uninstall    Delete Casdoor resources. Namespace is kept unless --delete-namespace is set.
+  uninstall    Delete only Casdoor resources. Namespace is kept unless --delete-namespace is set and the installer created it.
   help         Show this help.
 
 Options:
@@ -68,7 +69,7 @@ Options:
   --nodeport-http <port>             Optional NodePort for HTTP port 8000.
   --image-pull-policy <policy>       IfNotPresent, Always, or Never. Default: IfNotPresent
   --wait-timeout <duration>          Wait timeout. Default: ${DEFAULT_WAIT_TIMEOUT}
-  --delete-namespace                 During uninstall, also delete namespace.
+  --delete-namespace                 During uninstall, delete namespace only if this installer created it.
   -y, --yes                          Do not ask for confirmation.
   -h, --help                         Show this help.
 
@@ -90,7 +91,7 @@ Example PostgreSQL:
     --registry sealos.hub:5000/kube4 \
     -n casdoor \
     --db-driver postgres \
-    --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable' \
+    --data-source-name 'user=postgres password=password host=postgres.default.svc.cluster.local port=5432 sslmode=disable dbname=casdoor' \
     --db-name casdoor \
     --http-addr 0.0.0.0 \
     --origin 'https://casdoor.example.com' \
@@ -175,6 +176,9 @@ confirm() {
   echo "About to ${ACTION} Casdoor in namespace '${NAMESPACE}'."
   if [[ "${ACTION}" == "install" ]]; then
     echo "db-driver=${DB_DRIVER}, db-name=${DB_NAME}, http-addr=${HTTP_ADDR}, create-database=${CREATE_DATABASE}, service-type=${SERVICE_TYPE}"
+  elif [[ "${ACTION}" == "uninstall" ]]; then
+    echo "Only deployment/casdoor, service/casdoor, and secret/casdoor-config will be deleted."
+    echo "Namespace deletion is gated and only allowed for namespaces created by this installer."
   fi
   read -r -p "Continue? [y/N] " answer
   [[ "${answer}" == "y" || "${answer}" == "Y" ]] || die "aborted"
@@ -235,6 +239,21 @@ b64() {
   printf '%s' "$1" | base64 | tr -d '\n'
 }
 
+ensure_namespace() {
+  if kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+    info "namespace exists: ${NAMESPACE}"
+    return 0
+  fi
+
+  info "create namespace ${NAMESPACE}"
+  kubectl create namespace "${NAMESPACE}"
+  kubectl label namespace "${NAMESPACE}" \
+    app.kubernetes.io/name=casdoor \
+    app.kubernetes.io/instance=casdoor \
+    "${NAMESPACE_CREATED_LABEL}" \
+    --overwrite >/dev/null
+}
+
 render_app_conf_b64() {
   local static_base_url="${STATIC_BASE_URL}"
   if [[ -z "${static_base_url}" ]]; then
@@ -289,10 +308,12 @@ CONF
 }
 
 render_manifest() {
-  local casdoor_image rendered app_conf_b64 nodeport_http_line create_database_arg
+  local casdoor_image rendered app_conf_b64 app_conf_sha256 nodeport_http_line create_database_arg
+  need sha256sum
   casdoor_image="$(target_ref_by_name casdoor)"
   rendered="${WORKDIR}/rendered-casdoor.yaml"
   app_conf_b64="$(render_app_conf_b64)"
+  app_conf_sha256="$(printf '%s' "${app_conf_b64}" | base64 -d | sha256sum | awk '{print $1}')"
   nodeport_http_line=""
   create_database_arg="--createDatabase=${CREATE_DATABASE}"
   if [[ -n "${NODEPORT_HTTP}" ]]; then nodeport_http_line="    nodePort: ${NODEPORT_HTTP}"; fi
@@ -304,6 +325,7 @@ render_manifest() {
     -v service_type="${SERVICE_TYPE}" \
     -v nodeport_http_line="${nodeport_http_line}" \
     -v app_conf_b64="${app_conf_b64}" \
+    -v app_conf_sha256="${app_conf_sha256}" \
     -v create_database_arg="${create_database_arg}" \
     '
       /__NODEPORT_HTTP_LINE__/ { if (nodeport_http_line != "") print nodeport_http_line; next }
@@ -313,6 +335,7 @@ render_manifest() {
         gsub(/__IMAGE_PULL_POLICY__/, image_pull_policy)
         gsub(/__SERVICE_TYPE__/, service_type)
         gsub(/__APP_CONF_B64__/, app_conf_b64)
+        gsub(/__APP_CONF_SHA256__/, app_conf_sha256)
         gsub(/__CREATE_DATABASE_ARG__/, create_database_arg)
         print
       }
@@ -326,6 +349,7 @@ install_app() {
   need base64
   extract_payload
   confirm
+  ensure_namespace
   prepare_images
   local rendered
   rendered="$(render_manifest)"
@@ -342,17 +366,22 @@ status_app() {
   kubectl get pods,svc,deploy,secret -n "${NAMESPACE}" -l app.kubernetes.io/name=casdoor || true
 }
 
+delete_namespace_if_safe() {
+  if kubectl get namespace "${NAMESPACE}" -l "${NAMESPACE_CREATED_LABEL}" --no-headers 2>/dev/null | grep -q "^${NAMESPACE}[[:space:]]"; then
+    info "delete namespace ${NAMESPACE} because it was created by this installer"
+    kubectl delete namespace "${NAMESPACE}" --ignore-not-found=true || true
+  else
+    info "refuse to delete namespace ${NAMESPACE}: it was not created by this installer"
+  fi
+}
+
 uninstall_app() {
   need kubectl
-  extract_payload
   confirm
-  local rendered
-  rendered="$(render_manifest)"
-  info "kubectl delete -f rendered manifest"
-  kubectl delete -f "${rendered}" --ignore-not-found=true || true
+  info "delete Casdoor namespaced resources in namespace ${NAMESPACE}"
+  kubectl delete deployment/casdoor service/casdoor secret/casdoor-config -n "${NAMESPACE}" --ignore-not-found=true || true
   if [[ "${DELETE_NAMESPACE}" == "1" ]]; then
-    info "delete namespace ${NAMESPACE}"
-    kubectl delete namespace "${NAMESPACE}" --ignore-not-found=true || true
+    delete_namespace_if_safe
   else
     info "namespace kept: ${NAMESPACE}"
   fi
